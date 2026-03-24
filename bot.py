@@ -54,7 +54,7 @@ def chat(conversation, user_msg):
         role = "user" if turn["role"] == "user" else "model"
         history.append(types.Content(role=role, parts=[types.Part(text=turn["content"])]))
     chat_session = client.chats.create(
-        model="gemini-2.0-flash-lite",
+        model="gemini-2.0-flash",
         config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
         history=history
     )
@@ -110,7 +110,7 @@ def main():
         if now.hour == 1 and last_daily_date != today_str:
             try:
                 prompt = "给阿筠写一条早上的德语学习提醒，温暖俏皮，不超过80字。"
-                response = client.models.generate_content(model="gemini-2.0-flash-lite", contents=prompt)
+                response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
                 send_telegram(response.text.strip())
                 last_daily_date = today_str
             except Exception as e:
@@ -124,7 +124,7 @@ def main():
                     last_remind = state.get("last_remind_time")
                     if not last_remind or (now - datetime.fromisoformat(last_remind)).total_seconds() > 10800:
                         prompt = "阿筠已经 " + str(int(hours_silent)) + " 小时没有学德语了。用俏皮温柔的语气催她一下，不超过80字。"
-                        response = client.models.generate_content(model="gemini-2.0-flash-lite", contents=prompt)
+                        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
                         send_telegram(response.text.strip())
                         state["last_remind_time"] = now.isoformat()
                         save_state(state)
