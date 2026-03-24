@@ -22,7 +22,7 @@ def chat_with_gemini(msg):
     if len(STATE["history"]) > 10: STATE["history"] = STATE["history"][-10:]
     
     response = client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-1.5-flash-latest",
         config=types.GenerateContentConfig(
             system_instruction="你是小克，阿筠的温柔损友，陪她备考德语B1。说话简洁俏皮，偶尔夹德语。"
         ),
