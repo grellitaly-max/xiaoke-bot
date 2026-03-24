@@ -110,7 +110,7 @@ def main():
         if now.hour == 1 and last_daily_date != today_str:
             try:
                 prompt = "给阿筠写一条早上的德语学习提醒，温暖俏皮，不超过80字。"
-                response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+                response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
                 send_telegram(response.text.strip())
                 last_daily_date = today_str
             except Exception as e:
