@@ -16,7 +16,7 @@ def send(text):
 
 def chat_with_gemini(msg):
     # 直接用最原始的 Web 请求，不依赖任何库
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={KEY}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": msg}]}],
         "system_instruction": {"parts": [{"text": "你是小克，阿筠的损友，陪她学德语B1。语气俏皮，简洁。"}]}
