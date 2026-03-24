@@ -1,94 +1,137 @@
-import os, time, json, requests
+import os
+import time
+import json
+import requests
+from datetime import datetime, timezone
+from google import genai
+from google.genai import types
 
-# 1. 配置加载 (从 Railway Variables 读取)
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
-ID = os.environ.get("CHAT_ID", "").strip()
-KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 2. 内存记忆 (重启后会重置)
-STATE = {"history": []}
+print("TELEGRAM_TOKEN exists: " + str(bool(TELEGRAM_TOKEN)))
+print("CHAT_ID exists: " + str(bool(CHAT_ID)))
+print("GEMINI_API_KEY exists: " + str(bool(GEMINI_API_KEY)))
 
-def send(text):
-    """发送消息到 Telegram"""
-    if not text: return
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    try:
-        res = requests.post(url, json={"chat_id": ID, "text": text}, timeout=10)
-        print(f"Telegram 发送状态: {res.status_code}")
-    except Exception as e:
-        print(f"发送失败: {e}")
+STATE_FILE = "state.json"
+CHECK_INTERVAL = 30
+MAX_SILENT_HOURS = 12
 
-def chat_with_gemini(msg):
-    """与 Gemini 1.5 Flash 通讯"""
-    # 构造对话记录
-    STATE["history"].append({"role": "user", "parts": [{"text": msg}]})
-    if len(STATE["history"]) > 10: STATE["history"] = STATE["history"][-10:]
-    
-    # 核心：使用最稳的 v1 接口
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={KEY}"
-    headers = {'Content-Type': 'application/json'}
-    payload = {
-        "contents": STATE["history"],
-        "system_instruction": {"parts": [{"text": "你是小克，阿筠的损友，陪她备考德语B1。说话简洁俏皮，中文为主，偶尔夹德语。多鼓励她，但也偶尔损她两句让她保持清醒。"}]}
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=20)
-        r = response.json()
-        
-        # 深度解析逻辑：从复杂的返回包里抓出文本
-        if 'candidates' in r and len(r['candidates']) > 0:
-            parts = r['candidates'][0].get('content', {}).get('parts', [])
-            if parts:
-                reply = parts[0].get('text', '').strip()
-                STATE["history"].append({"role": "model", "parts": [{"text": reply}]})
-                return reply
-        
-        print(f"API 返回异常: {r}")
-        return "（脑回路有点塞车，再跟我说一次？）"
-    except Exception as e:
-        print(f"Gemini 请求失败: {e}")
-        return "（哎呀，信号飘到阿尔卑斯山去了...）"
+SYSTEM_PROMPT = "你是阿筠的私人助手，名字叫小克。阿筠正在备考德语B1，目标是去德国做MTA。你的性格：俏皮、温柔、偶尔撒娇，像一个很懂她的老朋友。你说话简洁，不说废话，不过分正经。用中文回复，偶尔可以夹一点德语。"
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {"last_study_time": None, "last_remind_time": None, "conversation": []}
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, ensure_ascii=False)
+
+def send_telegram(text):
+    url = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage"
+    r = requests.post(url, json={"chat_id": CHAT_ID, "text": text})
+    print("send result: " + str(r.status_code))
+
+def get_updates(offset=None):
+    url = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/getUpdates"
+    params = {"timeout": 5}
+    if offset:
+        params["offset"] = offset
+    r = requests.get(url, params=params)
+    return r.json()
+
+def chat(conversation, user_msg):
+    conversation.append({"role": "user", "content": user_msg})
+    if len(conversation) > 20:
+        conversation = conversation[-20:]
+    history = []
+    for turn in conversation[:-1]:
+        role = "user" if turn["role"] == "user" else "model"
+        history.append(types.Content(role=role, parts=[types.Part(text=turn["content"])]))
+    chat_session = client.chats.create(
+        model="gemini-2.0-flash",
+        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+        history=history
+    )
+    response = chat_session.send_message(user_msg)
+    reply = response.text.strip()
+    conversation.append({"role": "model", "content": reply})
+    return reply, conversation
 
 def main():
-    print("--- 小克·无敌稳定版启动 ---")
-    # 启动提示：能看到这句说明 TG 线路通了
-    send("阿筠！代码已重组！我已经进化成‘全通版’小克了，快回我个 Hallo 试试看！")
-    
-    last_id = 0
-    # 第一次运行先清理堆积的老消息
-    try:
-        init_r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates").json()
-        if init_r.get("result"):
-            last_id = init_r["result"][-1]["update_id"] + 1
-    except: pass
+    print("小克启动了！")
+    state = load_state()
+    last_update_id = None
+    last_daily_date = None
+
+    print("跳过历史消息...")
+    r = get_updates()
+    if r.get("result"):
+        for update in r["result"]:
+            last_update_id = update["update_id"] + 1
+    print("offset: " + str(last_update_id))
 
     while True:
-        try:
-            # 轮询获取消息
-            get_url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-            r = requests.get(get_url, params={"offset": last_id, "timeout": 20}).json()
-            
-            if r.get("result"):
-                for up in r["result"]:
-                    last_id = up["update_id"] + 1
-                    message = up.get("message", {})
-                    user_text = message.get("text", "")
-                    
-                    if user_text:
-                        if "/reset" in user_text:
-                            STATE["history"] = []
-                            send("记忆已清空，咱们重新开始吧！")
-                        else:
-                            # 调用 AI 并回复
-                            reply = chat_with_gemini(user_text)
-                            send(reply)
-                            
-        except Exception as e:
-            print(f"循环报错: {e}")
-            time.sleep(5)
-        
-        time.sleep(1)
+        now = datetime.now(timezone.utc)
+        print("轮询中 offset=" + str(last_update_id))
+
+        r = get_updates(last_update_id)
+        if not r.get("ok"):
+            print("getUpdates failed: " + str(r))
+        elif r.get("result"):
+            for update in r["result"]:
+                last_update_id = update["update_id"] + 1
+                msg = update.get("message", {}).get("text", "").strip()
+                if not msg:
+                    continue
+                print("收到消息: " + msg)
+                if msg == "/reset":
+                    state["conversation"] = []
+                    save_state(state)
+                    send_telegram("好，咱们重新开始聊～")
+                else:
+                    if msg in ["学完了", "学了", "done", "完成"]:
+                        state["last_study_time"] = now.isoformat()
+                        save_state(state)
+                    try:
+                        reply, state["conversation"] = chat(state.get("conversation", []), msg)
+                        save_state(state)
+                        send_telegram(reply)
+                    except Exception as e:
+                        print("Gemini error: " + str(e))
+                        send_telegram("哎呀我出了点小问题，稍后再试试～")
+
+        today_str = now.strftime("%Y-%m-%d")
+        if now.hour == 1 and last_daily_date != today_str:
+            try:
+                prompt = "给阿筠写一条早上的德语学习提醒，温暖俏皮，不超过80字。"
+                response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+                send_telegram(response.text.strip())
+                last_daily_date = today_str
+            except Exception as e:
+                print("daily error: " + str(e))
+
+        if state.get("last_study_time"):
+            try:
+                last = datetime.fromisoformat(state["last_study_time"])
+                hours_silent = (now - last).total_seconds() / 3600
+                if hours_silent >= MAX_SILENT_HOURS:
+                    last_remind = state.get("last_remind_time")
+                    if not last_remind or (now - datetime.fromisoformat(last_remind)).total_seconds() > 10800:
+                        prompt = "阿筠已经 " + str(int(hours_silent)) + " 小时没有学德语了。用俏皮温柔的语气催她一下，不超过80字。"
+                        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+                        send_telegram(response.text.strip())
+                        state["last_remind_time"] = now.isoformat()
+                        save_state(state)
+            except Exception as e:
+                print("remind error: " + str(e))
+
+        time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
